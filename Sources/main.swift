@@ -256,6 +256,7 @@ struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .frame(width: 520, height: 330)
     }
 
@@ -318,6 +319,7 @@ struct RulesPane: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .frame(width: 640, height: 500)
         .confirmationDialog("Replace all rules with the defaults?", isPresented: $confirmReset) {
             Button("Reset Rules", role: .destructive) { m.resetRules() }
@@ -347,6 +349,19 @@ func makeSettingsWindow() -> NSWindow {
     w.styleMask = [.titled, .closable, .miniaturizable]
     w.toolbarStyle = .preference
     w.isReleasedWhenClosed = false
+
+    // Translucent "glass": blur the desktop behind the whole window, titlebar included.
+    w.isOpaque = false
+    w.backgroundColor = .clear
+    w.titlebarAppearsTransparent = true
+    if let content = w.contentView, let frame = content.superview {
+        let glass = NSVisualEffectView(frame: frame.bounds)
+        glass.material = .underWindowBackground
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.autoresizingMask = [.width, .height]
+        frame.addSubview(glass, positioned: .below, relativeTo: content)
+    }
     w.center()
     return w
 }
