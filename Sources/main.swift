@@ -1,4 +1,5 @@
 import Cocoa
+import SwiftUI
 import ServiceManagement
 
 // MARK: - Model
@@ -159,6 +160,143 @@ final class Engine {
     var watchPath: String { config.watch }
 }
 
+// MARK: - Settings
+
+struct RuleRow: Identifiable {
+    let id = UUID()
+    var dest = ""
+    var ext = ""
+    var name = ""
+}
+
+final class SettingsModel: ObservableObject {
+    @Published var watch = ""
+    @Published var root = ""
+    @Published var rows: [RuleRow] = []
+    @Published var status = ""
+
+    init() { load() }
+
+    private static var defaults: Config { try! JSONDecoder().decode(Config.self, from: Data(defaultRules.utf8)) }
+
+    private func apply(_ c: Config) {
+        watch = c.watch
+        root = c.root ?? c.watch
+        rows = c.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: $0.name ?? "") }
+    }
+
+    func load() {
+        let c = (try? Data(contentsOf: rulesURL)).flatMap { try? JSONDecoder().decode(Config.self, from: $0) }
+        apply(c ?? Self.defaults)
+        status = ""
+    }
+
+    func reset() { apply(Self.defaults); status = "Defaults loaded. Press Save to apply." }
+
+    static func parseExt(_ s: String) -> [String] {
+        s.split(whereSeparator: { ", ;".contains($0) })
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased() }
+            .filter { !$0.isEmpty }
+    }
+
+    func regexValid(_ s: String) -> Bool { s.isEmpty || (try? NSRegularExpression(pattern: s)) != nil }
+    var canSave: Bool { !watch.trimmingCharacters(in: .whitespaces).isEmpty && rows.allSatisfy { regexValid($0.name) } }
+
+    func save() {
+        let rules = rows.compactMap { r -> Rule? in
+            let d = r.dest.trimmingCharacters(in: .whitespaces)
+            let e = Self.parseExt(r.ext)
+            let n = r.name.trimmingCharacters(in: .whitespaces)
+            guard !d.isEmpty, !e.isEmpty || !n.isEmpty else { return nil }
+            return Rule(dest: d, ext: e.isEmpty ? nil : e, name: n.isEmpty ? nil : n)
+        }
+        let root = self.root.trimmingCharacters(in: .whitespaces)
+        let c = Config(watch: watch.trimmingCharacters(in: .whitespaces), root: root.isEmpty ? nil : root, rules: rules)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        do {
+            try fm.createDirectory(at: support, withIntermediateDirectories: true)
+            try enc.encode(c).write(to: rulesURL, options: .atomic)
+            apply(c)
+            status = "Saved"
+        } catch { status = "Could not save: \(error.localizedDescription)" }
+    }
+}
+
+struct SettingsView: View {
+    @StateObject private var m = SettingsModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            GroupBox(label: Text("Folders").font(.headline)) {
+                VStack(spacing: 8) {
+                    folderRow("Watch", $m.watch)
+                    folderRow("Sort into", $m.root)
+                }.padding(8)
+            }
+
+            GroupBox(label: Text("Rules  ·  first match wins, drag to reorder").font(.headline)) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Spacer().frame(width: 20)
+                        Text("Folder").frame(width: 150, alignment: .leading)
+                        Text("Extensions (comma separated)").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Name regex").frame(width: 150, alignment: .leading)
+                        Spacer().frame(width: 22)
+                    }
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 6)
+
+                    List {
+                        ForEach($m.rows) { $r in
+                            HStack(spacing: 8) {
+                                Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary).frame(width: 20)
+                                TextField("Folder", text: $r.dest).frame(width: 150)
+                                TextField("png, jpg", text: $r.ext)
+                                TextField("optional", text: $r.name)
+                                    .frame(width: 150)
+                                    .foregroundColor(m.regexValid(r.name) ? .primary : .red)
+                                Button { m.rows.removeAll { $0.id == r.id } } label: { Image(systemName: "minus.circle") }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                        .onMove { m.rows.move(fromOffsets: $0, toOffset: $1) }
+                    }
+                    .frame(minHeight: 240)
+
+                    HStack {
+                        Button { m.rows.append(RuleRow()) } label: { Label("Add Rule", systemImage: "plus") }
+                        Spacer()
+                    }.padding(8)
+                }
+            }
+
+            HStack {
+                Text(m.status).foregroundStyle(.secondary)
+                Spacer()
+                Button("Reset to Defaults") { m.reset() }
+                Button("Revert") { m.load() }
+                Button("Save") { m.save() }.keyboardShortcut(.defaultAction).disabled(!m.canSave)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 680, minHeight: 520)
+    }
+
+    private func folderRow(_ label: String, _ path: Binding<String>) -> some View {
+        HStack {
+            Text(label).frame(width: 70, alignment: .trailing)
+            TextField("~/Downloads", text: path)
+            Button("Choose…") {
+                let p = NSOpenPanel()
+                p.canChooseDirectories = true
+                p.canChooseFiles = false
+                p.canCreateDirectories = true
+                if p.runModal() == .OK, let u = p.url { path.wrappedValue = (u.path as NSString).abbreviatingWithTildeInPath }
+            }
+        }
+    }
+}
+
 // MARK: - UI
 
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -172,6 +310,25 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         updateIcon()
         engine.start()
+        if CommandLine.arguments.contains("--settings") { openSettings() }
+    }
+
+    var settingsWindow: NSWindow?
+
+    @objc func openSettings() {
+        if settingsWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            w.title = "Nook Settings"
+            w.isReleasedWhenClosed = false
+            w.center()
+            settingsWindow = w
+        }
+        if settingsWindow?.isVisible != true {   // fresh load from disk on each open
+            settingsWindow?.contentViewController = NSHostingController(rootView: SettingsView())
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func updateIcon() {
@@ -207,7 +364,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         m.addItem(.separator())
         add(m, "Open Watched Folder", #selector(openFolder))
-        add(m, "Edit Rules…", #selector(editRules))
+        add(m, "Settings…", #selector(openSettings), ",")
         let login = add(m, "Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         m.addItem(.separator())
@@ -227,7 +384,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func undo() { engine.undoLast { self.status = $0 } }
     @objc func reveal(_ s: NSMenuItem) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: s.representedObject as! String)]) }
     @objc func openFolder() { NSWorkspace.shared.open(expand(engine.watchPath)) }
-    @objc func editRules() { NSWorkspace.shared.open(rulesURL) }
     @objc func toggleLogin() {
         let s = SMAppService.mainApp
         do { if s.status == .enabled { try s.unregister() } else { try s.register() } }
