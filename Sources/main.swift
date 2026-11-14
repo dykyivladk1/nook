@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import Combine
 import ServiceManagement
 
 // MARK: - Model
@@ -169,29 +170,46 @@ struct RuleRow: Identifiable {
     var name = ""
 }
 
+/// Autosaving model shared by both settings panes (like System Settings: no Save button).
 final class SettingsModel: ObservableObject {
     @Published var watch = ""
     @Published var root = ""
     @Published var rows: [RuleRow] = []
-    @Published var status = ""
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    private var loading = true
+    private var bag = Set<AnyCancellable>()
 
-    init() { load() }
+    init() {
+        load()
+        objectWillChange
+            .filter { [weak self] in self?.loading == false }
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.save() }
+            .store(in: &bag)
+    }
 
     private static var defaults: Config { try! JSONDecoder().decode(Config.self, from: Data(defaultRules.utf8)) }
 
     private func apply(_ c: Config) {
+        loading = true
         watch = c.watch
         root = c.root ?? c.watch
         rows = c.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: $0.name ?? "") }
+        loading = false
     }
 
     func load() {
         let c = (try? Data(contentsOf: rulesURL)).flatMap { try? JSONDecoder().decode(Config.self, from: $0) }
         apply(c ?? Self.defaults)
-        status = ""
     }
 
-    func reset() { apply(Self.defaults); status = "Defaults loaded. Press Save to apply." }
+    func resetRules() { rows = Self.defaults.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: $0.name ?? "") } }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        let s = SMAppService.mainApp
+        do { if on { try s.register() } else { try s.unregister() } } catch {}
+        launchAtLogin = s.status == .enabled
+    }
 
     static func parseExt(_ s: String) -> [String] {
         s.split(whereSeparator: { ", ;".contains($0) })
@@ -200,9 +218,10 @@ final class SettingsModel: ObservableObject {
     }
 
     func regexValid(_ s: String) -> Bool { s.isEmpty || (try? NSRegularExpression(pattern: s)) != nil }
-    var canSave: Bool { !watch.trimmingCharacters(in: .whitespaces).isEmpty && rows.allSatisfy { regexValid($0.name) } }
 
-    func save() {
+    /// Writes rules.json. Incomplete rows are skipped in the file but stay visible while being edited.
+    private func save() {
+        guard !watch.trimmingCharacters(in: .whitespaces).isEmpty, rows.allSatisfy({ regexValid($0.name) }) else { return }
         let rules = rows.compactMap { r -> Rule? in
             let d = r.dest.trimmingCharacters(in: .whitespaces)
             let e = Self.parseExt(r.ext)
@@ -210,91 +229,126 @@ final class SettingsModel: ObservableObject {
             guard !d.isEmpty, !e.isEmpty || !n.isEmpty else { return nil }
             return Rule(dest: d, ext: e.isEmpty ? nil : e, name: n.isEmpty ? nil : n)
         }
-        let root = self.root.trimmingCharacters(in: .whitespaces)
-        let c = Config(watch: watch.trimmingCharacters(in: .whitespaces), root: root.isEmpty ? nil : root, rules: rules)
+        let r = root.trimmingCharacters(in: .whitespaces)
+        let c = Config(watch: watch.trimmingCharacters(in: .whitespaces), root: r.isEmpty ? nil : r, rules: rules)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        do {
-            try fm.createDirectory(at: support, withIntermediateDirectories: true)
-            try enc.encode(c).write(to: rulesURL, options: .atomic)
-            apply(c)
-            status = "Saved"
-        } catch { status = "Could not save: \(error.localizedDescription)" }
+        try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+        try? enc.encode(c).write(to: rulesURL, options: .atomic)
     }
 }
 
-struct SettingsView: View {
-    @StateObject private var m = SettingsModel()
+struct GeneralPane: View {
+    @ObservedObject var m: SettingsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            GroupBox(label: Text("Folders").font(.headline)) {
-                VStack(spacing: 8) {
-                    folderRow("Watch", $m.watch)
-                    folderRow("Sort into", $m.root)
-                }.padding(8)
+        Form {
+            Section {
+                folderRow("Watch", $m.watch)
+                folderRow("Sort into", $m.root)
+            } header: {
+                Text("Folders")
+            } footer: {
+                Text("Nook only moves files that are placed directly in the watched folder. Subfolders are never touched.")
             }
-
-            GroupBox(label: Text("Rules  ·  first match wins, drag to reorder").font(.headline)) {
-                VStack(spacing: 0) {
-                    HStack(spacing: 8) {
-                        Spacer().frame(width: 20)
-                        Text("Folder").frame(width: 150, alignment: .leading)
-                        Text("Extensions (comma separated)").frame(maxWidth: .infinity, alignment: .leading)
-                        Text("Name regex").frame(width: 150, alignment: .leading)
-                        Spacer().frame(width: 22)
-                    }
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 6)
-
-                    List {
-                        ForEach($m.rows) { $r in
-                            HStack(spacing: 8) {
-                                Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary).frame(width: 20)
-                                TextField("Folder", text: $r.dest).frame(width: 150)
-                                TextField("png, jpg", text: $r.ext)
-                                TextField("optional", text: $r.name)
-                                    .frame(width: 150)
-                                    .foregroundColor(m.regexValid(r.name) ? .primary : .red)
-                                Button { m.rows.removeAll { $0.id == r.id } } label: { Image(systemName: "minus.circle") }
-                                    .buttonStyle(.borderless)
-                            }
-                        }
-                        .onMove { m.rows.move(fromOffsets: $0, toOffset: $1) }
-                    }
-                    .frame(minHeight: 240)
-
-                    HStack {
-                        Button { m.rows.append(RuleRow()) } label: { Label("Add Rule", systemImage: "plus") }
-                        Spacer()
-                    }.padding(8)
-                }
-            }
-
-            HStack {
-                Text(m.status).foregroundStyle(.secondary)
-                Spacer()
-                Button("Reset to Defaults") { m.reset() }
-                Button("Revert") { m.load() }
-                Button("Save") { m.save() }.keyboardShortcut(.defaultAction).disabled(!m.canSave)
+            Section {
+                Toggle("Open Nook at login", isOn: Binding(get: { m.launchAtLogin }, set: { m.setLaunchAtLogin($0) }))
             }
         }
-        .padding(18)
-        .frame(minWidth: 680, minHeight: 520)
+        .formStyle(.grouped)
+        .frame(width: 520, height: 330)
     }
 
     private func folderRow(_ label: String, _ path: Binding<String>) -> some View {
-        HStack {
-            Text(label).frame(width: 70, alignment: .trailing)
-            TextField("~/Downloads", text: path)
-            Button("Choose…") {
-                let p = NSOpenPanel()
-                p.canChooseDirectories = true
-                p.canChooseFiles = false
-                p.canCreateDirectories = true
-                if p.runModal() == .OK, let u = p.url { path.wrappedValue = (u.path as NSString).abbreviatingWithTildeInPath }
+        LabeledContent(label) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.fill").foregroundStyle(Color.accentColor)
+                Text(path.wrappedValue).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                Button("Choose…") {
+                    let p = NSOpenPanel()
+                    p.canChooseDirectories = true
+                    p.canChooseFiles = false
+                    p.canCreateDirectories = true
+                    p.prompt = "Choose"
+                    if p.runModal() == .OK, let u = p.url { path.wrappedValue = (u.path as NSString).abbreviatingWithTildeInPath }
+                }
             }
         }
     }
+}
+
+struct RulesPane: View {
+    @ObservedObject var m: SettingsModel
+    @State private var confirmReset = false
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach($m.rows) { $r in
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder.fill").foregroundStyle(Color.accentColor).font(.title3)
+                        VStack(alignment: .leading, spacing: 3) {
+                            TextField("Folder", text: $r.dest).textFieldStyle(.plain).fontWeight(.medium)
+                            HStack(spacing: 12) {
+                                TextField("Extensions: png, jpg", text: $r.ext)
+                                TextField("Name matches (regex)", text: $r.name)
+                                    .foregroundColor(m.regexValid(r.name) ? .secondary : .red)
+                            }
+                            .textFieldStyle(.plain).font(.callout).foregroundStyle(.secondary)
+                        }
+                        Button { m.rows.removeAll { $0.id == r.id } } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless).help("Delete rule")
+                    }
+                    .padding(.vertical, 2)
+                }
+                .onMove { m.rows.move(fromOffsets: $0, toOffset: $1) }
+            } header: {
+                Text("Rules")
+            } footer: {
+                Text("The first matching rule wins. Drag to reorder. Changes are saved automatically.")
+            }
+            Section {
+                HStack {
+                    Button { m.rows.append(RuleRow()) } label: { Label("Add Rule", systemImage: "plus") }
+                    Spacer()
+                    Button("Reset to Defaults…") { confirmReset = true }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 640, height: 500)
+        .confirmationDialog("Replace all rules with the defaults?", isPresented: $confirmReset) {
+            Button("Reset Rules", role: .destructive) { m.resetRules() }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+func makeSettingsWindow() -> NSWindow {
+    let model = SettingsModel()
+    let tabs = NSTabViewController()
+    tabs.tabStyle = .toolbar
+
+    func add<V: View>(_ title: String, _ symbol: String, _ view: V) {
+        let hc = NSHostingController(rootView: view)
+        hc.sizingOptions = [.preferredContentSize]
+        hc.title = title
+        let item = NSTabViewItem(viewController: hc)
+        item.label = title
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        tabs.addTabViewItem(item)
+    }
+    add("General", "gearshape", GeneralPane(m: model))
+    add("Rules", "list.bullet.rectangle", RulesPane(m: model))
+
+    let w = NSWindow(contentViewController: tabs)
+    w.styleMask = [.titled, .closable, .miniaturizable]
+    w.toolbarStyle = .preference
+    w.isReleasedWhenClosed = false
+    w.center()
+    return w
 }
 
 // MARK: - UI
@@ -316,19 +370,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var settingsWindow: NSWindow?
 
     @objc func openSettings() {
-        if settingsWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
-                             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            w.title = "Nook Settings"
-            w.isReleasedWhenClosed = false
-            w.center()
-            settingsWindow = w
-        }
-        if settingsWindow?.isVisible != true {   // fresh load from disk on each open
-            settingsWindow?.contentViewController = NSHostingController(rootView: SettingsView())
-        }
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        if settingsWindow?.isVisible != true { settingsWindow = makeSettingsWindow() }  // fresh load each open
         NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func about() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(nil)
     }
 
     func updateIcon() {
@@ -345,9 +394,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(head)
         if !status.isEmpty { let s = NSMenuItem(title: status, action: nil, keyEquivalent: ""); s.isEnabled = false; m.addItem(s) }
         m.addItem(.separator())
-        add(m, engine.paused ? "Resume" : "Pause", #selector(togglePause))
-        add(m, "Sort Now", #selector(sortNow))
-        add(m, "Undo Last Move", #selector(undo), "z")
+        add(m, engine.paused ? "Resume" : "Pause", #selector(togglePause), symbol: engine.paused ? "play.fill" : "pause.fill")
+        add(m, "Sort Now", #selector(sortNow), symbol: "arrow.triangle.2.circlepath")
+        add(m, "Undo Last Move", #selector(undo), "z", symbol: "arrow.uturn.backward")
 
         let sub = NSMenu()
         let moves = engine.recent(8)
@@ -359,22 +408,24 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sub.addItem(it)
         }
         let recent = NSMenuItem(title: "Recent Moves", action: nil, keyEquivalent: "")
+        recent.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
         recent.submenu = sub
         m.addItem(recent)
 
         m.addItem(.separator())
-        add(m, "Open Watched Folder", #selector(openFolder))
-        add(m, "Settings…", #selector(openSettings), ",")
-        let login = add(m, "Launch at Login", #selector(toggleLogin))
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        add(m, "Open Watched Folder", #selector(openFolder), symbol: "folder")
+        m.addItem(.separator())
+        add(m, "Settings…", #selector(openSettings), ",", symbol: "gearshape")
+        add(m, "About Nook", #selector(about), symbol: "info.circle")
         m.addItem(.separator())
         add(m, "Quit Nook", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
     }
 
     @discardableResult
-    func add(_ m: NSMenu, _ title: String, _ sel: Selector, _ key: String = "", target: AnyObject? = nil) -> NSMenuItem {
+    func add(_ m: NSMenu, _ title: String, _ sel: Selector, _ key: String = "", symbol: String? = nil, target: AnyObject? = nil) -> NSMenuItem {
         let it = NSMenuItem(title: title, action: sel, keyEquivalent: key)
         it.target = target ?? self
+        if let symbol { it.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
         m.addItem(it)
         return it
     }
@@ -384,11 +435,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func undo() { engine.undoLast { self.status = $0 } }
     @objc func reveal(_ s: NSMenuItem) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: s.representedObject as! String)]) }
     @objc func openFolder() { NSWorkspace.shared.open(expand(engine.watchPath)) }
-    @objc func toggleLogin() {
-        let s = SMAppService.mainApp
-        do { if s.status == .enabled { try s.unregister() } else { try s.register() } }
-        catch { status = "Login item failed" }
-    }
 }
 
 let app = NSApplication.shared

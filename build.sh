@@ -17,6 +17,7 @@ cat > build/Nook.app/Contents/Info.plist <<PLIST
   <key>CFBundleName</key><string>Nook</string>
   <key>CFBundleDisplayName</key><string>Nook</string>
   <key>CFBundleIdentifier</key><string>dev.nook.app</string>
+  <key>CFBundleIconFile</key><string>Nook</string>
   <key>CFBundleExecutable</key><string>Nook</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -26,6 +27,16 @@ cat > build/Nook.app/Contents/Info.plist <<PLIST
   <key>NSHumanReadableCopyright</key><string>Nook</string>
 </dict></plist>
 PLIST
+
+# app icon
+mkdir -p build/icon/Nook.iconset build/Nook.app/Contents/Resources
+swiftc -O Tools/make-icon.swift -o build/icon/mk && build/icon/mk build/icon/1024.png
+for s in 16 32 128 256 512; do
+  sips -z $s $s build/icon/1024.png --out build/icon/Nook.iconset/icon_${s}x${s}.png >/dev/null
+  sips -z $((s*2)) $((s*2)) build/icon/1024.png --out build/icon/Nook.iconset/icon_${s}x${s}@2x.png >/dev/null
+done
+iconutil -c icns build/icon/Nook.iconset -o build/Nook.app/Contents/Resources/Nook.icns
+rm -rf build/icon
 
 codesign --force --sign - build/Nook.app
 
