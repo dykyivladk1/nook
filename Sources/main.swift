@@ -161,6 +161,34 @@ final class Engine {
     var watchPath: String { config.watch }
 }
 
+// MARK: - Presets & login item
+
+struct Kind: Identifiable {
+    let id: String          // also the default folder name
+    let symbol: String
+    let ext: [String]
+}
+
+let kinds: [Kind] = [
+    Kind(id: "Images", symbol: "photo", ext: ["jpg", "jpeg", "png", "gif", "webp", "heic", "svg", "bmp", "tiff"]),
+    Kind(id: "Documents", symbol: "doc.text", ext: ["pdf", "doc", "docx", "odt", "txt", "md", "rtf", "pages"]),
+    Kind(id: "Spreadsheets", symbol: "tablecells", ext: ["xls", "xlsx", "csv", "ods", "numbers"]),
+    Kind(id: "Slides", symbol: "rectangle.on.rectangle", ext: ["ppt", "pptx", "key", "odp"]),
+    Kind(id: "Video", symbol: "film", ext: ["mp4", "mov", "mkv", "avi", "webm"]),
+    Kind(id: "Audio", symbol: "music.note", ext: ["mp3", "wav", "flac", "m4a", "aac"]),
+    Kind(id: "Archives", symbol: "archivebox", ext: ["zip", "tar.gz", "tgz", "rar", "7z", "gz", "tar"]),
+    Kind(id: "Installers", symbol: "shippingbox", ext: ["dmg", "pkg", "exe", "msi", "deb", "appimage"]),
+    Kind(id: "Code", symbol: "chevron.left.forwardslash.chevron.right", ext: ["py", "js", "ts", "json", "yaml", "yml", "ipynb", "sh", "html", "css"]),
+]
+
+var loginEnabled: Bool { SMAppService.mainApp.status == .enabled }
+
+func setLoginItem(_ on: Bool) {
+    let s = SMAppService.mainApp
+    do { if on { try s.register() } else { try s.unregister() } } catch {}
+    if on && s.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+}
+
 // MARK: - Settings
 
 struct RuleRow: Identifiable {
@@ -175,7 +203,7 @@ final class SettingsModel: ObservableObject {
     @Published var watch = ""
     @Published var root = ""
     @Published var rows: [RuleRow] = []
-    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var launchAtLogin = loginEnabled
     private var loading = true
     private var bag = Set<AnyCancellable>()
 
@@ -194,7 +222,7 @@ final class SettingsModel: ObservableObject {
         loading = true
         watch = c.watch
         root = c.root ?? c.watch
-        rows = c.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: $0.name ?? "") }
+        rows = c.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: Self.displayName($0.name ?? "")) }
         loading = false
     }
 
@@ -203,12 +231,38 @@ final class SettingsModel: ObservableObject {
         apply(c ?? Self.defaults)
     }
 
-    func resetRules() { rows = Self.defaults.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: $0.name ?? "") } }
+    func resetRules() { rows = Self.defaults.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: Self.displayName($0.name ?? "")) } }
 
     func setLaunchAtLogin(_ on: Bool) {
-        let s = SMAppService.mainApp
-        do { if on { try s.register() } else { try s.unregister() } } catch {}
-        launchAtLogin = s.status == .enabled
+        setLoginItem(on)
+        launchAtLogin = loginEnabled
+    }
+
+    func add(_ r: RuleRow) { rows.insert(r, at: 0) }   // newest rule goes on top so it wins
+
+    func add(kind k: Kind) { add(RuleRow(dest: k.id, ext: k.ext.joined(separator: ", "), name: "")) }
+
+    /// Create one rule per dropped file type (skips types already covered by a rule).
+    func addRules(forDropped urls: [URL]) {
+        for u in urls {
+            let e = u.pathExtension.lowercased()
+            guard !e.isEmpty, !rows.contains(where: { Self.parseExt($0.ext).contains(e) }) else { continue }
+            if let k = kinds.first(where: { $0.ext.contains(e) }) { add(kind: k) }
+            else { add(RuleRow(dest: e.uppercased() + " files", ext: e, name: "")) }
+        }
+    }
+
+    /// Plain words ("invoice, receipt") become a regex; anything that already looks like a regex is kept as is.
+    static func nameToRegex(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        if t.contains(where: { "^$()[]*+?\\{}.".contains($0) }) { return t }
+        return t.split(whereSeparator: { ",|".contains($0) })
+            .map { NSRegularExpression.escapedPattern(for: $0.trimmingCharacters(in: .whitespaces)) }
+            .filter { !$0.isEmpty }.joined(separator: "|")
+    }
+
+    static func displayName(_ regex: String) -> String {
+        regex.contains(where: { "^$()[]*+?\\{}.".contains($0) }) ? regex : regex.replacingOccurrences(of: "|", with: ", ")
     }
 
     static func parseExt(_ s: String) -> [String] {
@@ -217,7 +271,7 @@ final class SettingsModel: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
-    func regexValid(_ s: String) -> Bool { s.isEmpty || (try? NSRegularExpression(pattern: s)) != nil }
+    func regexValid(_ s: String) -> Bool { let r = Self.nameToRegex(s); return r.isEmpty || (try? NSRegularExpression(pattern: r)) != nil }
 
     /// Writes rules.json. Incomplete rows are skipped in the file but stay visible while being edited.
     private func save() {
@@ -225,7 +279,7 @@ final class SettingsModel: ObservableObject {
         let rules = rows.compactMap { r -> Rule? in
             let d = r.dest.trimmingCharacters(in: .whitespaces)
             let e = Self.parseExt(r.ext)
-            let n = r.name.trimmingCharacters(in: .whitespaces)
+            let n = Self.nameToRegex(r.name)
             guard !d.isEmpty, !e.isEmpty || !n.isEmpty else { return nil }
             return Rule(dest: d, ext: e.isEmpty ? nil : e, name: n.isEmpty ? nil : n)
         }
@@ -252,7 +306,9 @@ struct GeneralPane: View {
                 Text("Nook only moves files that are placed directly in the watched folder. Subfolders are never touched.")
             }
             Section {
-                Toggle("Open Nook at login", isOn: Binding(get: { m.launchAtLogin }, set: { m.setLaunchAtLogin($0) }))
+                Toggle("Open Nook when I log in", isOn: Binding(get: { m.launchAtLogin }, set: { m.setLaunchAtLogin($0) }))
+            } footer: {
+                Text("Nook starts quietly in the menu bar when you start your Mac. Keep the app in your Applications folder.")
             }
         }
         .formStyle(.grouped)
@@ -281,18 +337,23 @@ struct GeneralPane: View {
 struct RulesPane: View {
     @ObservedObject var m: SettingsModel
     @State private var confirmReset = false
+    @State private var showSheet = false
+    @State private var dropping = false
 
     var body: some View {
         Form {
             Section {
+                if m.rows.isEmpty {
+                    Text("No rules yet. Use Add Rule, or drop a file here.").foregroundStyle(.secondary)
+                }
                 ForEach($m.rows) { $r in
                     HStack(spacing: 10) {
                         Image(systemName: "folder.fill").foregroundStyle(Color.accentColor).font(.title3)
                         VStack(alignment: .leading, spacing: 3) {
                             TextField("Folder", text: $r.dest).textFieldStyle(.plain).fontWeight(.medium)
                             HStack(spacing: 12) {
-                                TextField("Extensions: png, jpg", text: $r.ext)
-                                TextField("Name matches (regex)", text: $r.name)
+                                TextField("File types: png, jpg", text: $r.ext)
+                                TextField("Name contains: invoice, receipt", text: $r.name)
                                     .foregroundColor(m.regexValid(r.name) ? .secondary : .red)
                             }
                             .textFieldStyle(.plain).font(.callout).foregroundStyle(.secondary)
@@ -308,11 +369,18 @@ struct RulesPane: View {
             } header: {
                 Text("Rules")
             } footer: {
-                Text("The first matching rule wins. Drag to reorder. Changes are saved automatically.")
+                Text("New rules go on top, and the first matching rule wins. Drag to reorder. Tip: drop any file here to make a rule for its type.")
             }
             Section {
                 HStack {
-                    Button { m.rows.append(RuleRow()) } label: { Label("Add Rule", systemImage: "plus") }
+                    Menu {
+                        ForEach(kinds) { k in
+                            Button { m.add(kind: k) } label: { Label(k.id, systemImage: k.symbol) }
+                        }
+                        Divider()
+                        Button("Custom Rule…") { showSheet = true }
+                    } label: { Label("Add Rule", systemImage: "plus") }
+                    .fixedSize()
                     Spacer()
                     Button("Reset to Defaults…") { confirmReset = true }
                 }
@@ -321,10 +389,92 @@ struct RulesPane: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .frame(width: 640, height: 500)
+        .overlay {
+            if dropping {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
+                    .background(Color.accentColor.opacity(0.08)).padding(8).allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
+            for p in providers {
+                p.loadItem(forTypeIdentifier: "public.file-url", options: nil) { data, _ in
+                    guard let d = data as? Data, let u = URL(dataRepresentation: d, relativeTo: nil) else { return }
+                    DispatchQueue.main.async { m.addRules(forDropped: [u]) }
+                }
+            }
+            return true
+        }
+        .sheet(isPresented: $showSheet) { AddRuleSheet { m.add($0) } }
         .confirmationDialog("Replace all rules with the defaults?", isPresented: $confirmReset) {
             Button("Reset Rules", role: .destructive) { m.resetRules() }
             Button("Cancel", role: .cancel) {}
         }
+    }
+}
+
+/// Guided "new rule": pick kinds of files, optionally add words, name the folder.
+struct AddRuleSheet: View {
+    var onAdd: (RuleRow) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var picked: Set<String> = []
+    @State private var extra = ""
+    @State private var words = ""
+    @State private var folder = ""
+
+    private var exts: [String] {
+        var out: [String] = []
+        for k in kinds where picked.contains(k.id) { out += k.ext }
+        for e in SettingsModel.parseExt(extra) where !out.contains(e) { out.append(e) }
+        return out
+    }
+    private var suggested: String {
+        kinds.first(where: { picked.contains($0.id) })?.id ?? SettingsModel.parseExt(extra).first.map { $0.uppercased() + " files" } ?? ""
+    }
+    private var finalFolder: String { folder.trimmingCharacters(in: .whitespaces).isEmpty ? suggested : folder }
+    private var canAdd: Bool { (!exts.isEmpty || !SettingsModel.nameToRegex(words).isEmpty) && !finalFolder.isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("New Rule").font(.title2.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Which files?").font(.headline)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(kinds) { k in
+                        Toggle(isOn: Binding(get: { picked.contains(k.id) },
+                                             set: { if $0 { picked.insert(k.id) } else { picked.remove(k.id) } })) {
+                            Label(k.id, systemImage: k.symbol).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .toggleStyle(.button)
+                    }
+                }
+                TextField("Other file types, e.g. epub, mobi", text: $extra).textFieldStyle(.roundedBorder)
+                TextField("Only if the name contains (optional), e.g. invoice, receipt", text: $words).textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Move them to").font(.headline)
+                HStack {
+                    Image(systemName: "folder.fill").foregroundStyle(Color.accentColor)
+                    TextField(suggested.isEmpty ? "Folder name" : suggested, text: $folder).textFieldStyle(.roundedBorder)
+                }
+                Text("A folder inside your “Sort into” folder. Use Taxes/2026 for a subfolder.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Add Rule") {
+                    onAdd(RuleRow(dest: finalFolder.trimmingCharacters(in: .whitespaces),
+                                  ext: exts.joined(separator: ", "), name: words))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction).disabled(!canAdd)
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
     }
 }
 
@@ -380,7 +530,26 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateIcon()
         engine.start()
         if CommandLine.arguments.contains("--settings") { openSettings() }
+        if ProcessInfo.processInfo.environment["NOOK_SUPPORT"] == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.askLoginOnce() }
+        }
     }
+
+    /// First launch only: offer to start Nook at login.
+    func askLoginOnce() {
+        let key = "askedLoginItem"
+        guard !UserDefaults.standard.bool(forKey: key), !loginEnabled else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Open Nook when you start your Mac?"
+        a.informativeText = "Nook lives in the menu bar and keeps your Downloads tidy in the background. You can change this any time in Settings."
+        a.addButton(withTitle: "Open at Login")
+        a.addButton(withTitle: "Not Now")
+        if a.runModal() == .alertFirstButtonReturn { setLoginItem(true) }
+    }
+
+    @objc func toggleLogin() { setLoginItem(!loginEnabled) }
 
     var settingsWindow: NSWindow?
 
@@ -430,6 +599,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(.separator())
         add(m, "Open Watched Folder", #selector(openFolder), symbol: "folder")
         m.addItem(.separator())
+        let login = add(m, "Open at Login", #selector(toggleLogin), symbol: "power")
+        login.state = loginEnabled ? .on : .off
         add(m, "Settings…", #selector(openSettings), ",", symbol: "gearshape")
         add(m, "About Nook", #selector(about), symbol: "info.circle")
         m.addItem(.separator())

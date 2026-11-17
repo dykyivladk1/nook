@@ -18,7 +18,16 @@ The app is ad-hoc signed; on first launch right-click it and choose **Open**.
 
 ## Settings
 
-Menu bar icon → **Settings…** (⌘,). A native Preferences window with General (folders, open at login) and Rules (add, edit, delete, drag-reorder) tabs. Extensions are comma separated; the name field is an optional regex. Changes are saved automatically. Invalid regexes turn red and are not saved.
+Menu bar icon → **Settings…** (⌘,). A native Preferences window with General (folders, open at login) and Rules tabs. Extensions are comma separated; the name field is an optional regex. 
+Making rules is point-and-click:
+
+- **Add Rule** → pick a ready-made kind (Images, Documents, Video, ...) for a one-click rule, or **Custom Rule…** to choose several kinds, add extra file types, an optional "name contains" filter and a folder.
+- **Drop a file** onto the Rules tab to create a rule for its type.
+- New rules go on top and the first match wins; drag to reorder.
+
+Nook offers to open at login on first launch; you can also toggle **Open at Login** in the menu or in Settings → General.
+
+Changes are saved automatically. Invalid regexes turn red and are not saved.
 
 Rules are stored in `~/Library/Application Support/Nook/rules.json`, so you can also edit them by hand. The first matching rule wins.
 
