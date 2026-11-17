@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 rm -rf build && mkdir -p build/Nook.app/Contents/MacOS build/dmg
 
 for arch in arm64 x86_64; do
-  swiftc -O -target "$arch-apple-macos13.0" Sources/main.swift -o "build/Nook-$arch"
+  swiftc -O -target "$arch-apple-macos13.0" Sources/*.swift -o "build/Nook-$arch"
 done
 lipo -create build/Nook-arm64 build/Nook-x86_64 -output build/Nook.app/Contents/MacOS/Nook
 rm build/Nook-arm64 build/Nook-x86_64

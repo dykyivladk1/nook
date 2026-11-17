@@ -36,6 +36,15 @@ let defaultRules = """
 }
 """
 
+func logMove(_ m: Move) {
+    guard var line = try? JSONEncoder().encode(m) else { return }
+    line.append(0x0A)
+    try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+    if let h = try? FileHandle(forWritingTo: logURL) {
+        h.seekToEndOfFile(); h.write(line); try? h.close()
+    } else { try? line.write(to: logURL) }
+}
+
 func expand(_ p: String) -> URL { URL(fileURLWithPath: (p as NSString).expandingTildeInPath) }
 
 func unique(_ u: URL) -> URL {
@@ -125,13 +134,7 @@ final class Engine {
         return true
     }
 
-    private func appendLog(_ m: Move) {
-        guard var line = try? JSONEncoder().encode(m) else { return }
-        line.append(0x0A)
-        if let h = try? FileHandle(forWritingTo: logURL) {
-            h.seekToEndOfFile(); h.write(line); try? h.close()
-        } else { try? line.write(to: logURL) }
-    }
+    private func appendLog(_ m: Move) { logMove(m) }
 
     // MARK: public actions (run on the engine queue)
 
@@ -161,6 +164,7 @@ final class Engine {
     }
 
     var watchPath: String { config.watch }
+    var rootPath: String { config.root ?? config.watch }
 }
 
 // MARK: - Presets & login item
@@ -541,11 +545,13 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var status = ""
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        installMainMenu()
         menu.delegate = self
         item.menu = menu
         updateIcon()
         engine.start()
         if CommandLine.arguments.contains("--settings") { openSettings() }
+        if CommandLine.arguments.contains("--browser") { openBrowser() }
         if ProcessInfo.processInfo.environment["NOOK_SUPPORT"] == nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.askLoginOnce() }
         }
@@ -568,6 +574,42 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func toggleLogin() { setLoginItem(!loginEnabled) }
 
     var settingsWindow: NSWindow?
+    var browserWindow: NSWindow?
+
+    @objc func openBrowser() {
+        if browserWindow?.isVisible != true {
+            browserWindow = makeBrowserWindow(start: expand(engine.watchPath), root: expand(engine.rootPath))
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        browserWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Standard Edit/Window menus so ⌘C ⌘V ⌘X ⌘A ⌘Z ⌘W work in text fields and the file browser.
+    func installMainMenu() {
+        let main = NSMenu()
+        let app = NSMenuItem(); main.addItem(app)
+        let appMenu = NSMenu(); app.submenu = appMenu
+        appMenu.addItem(withTitle: "Hide Nook", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Nook", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        let edit = NSMenuItem(); main.addItem(edit)
+        let em = NSMenu(title: "Edit"); edit.submenu = em
+        em.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = em.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        em.addItem(.separator())
+        em.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        em.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        em.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        em.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        let win = NSMenuItem(); main.addItem(win)
+        let wm = NSMenu(title: "Window"); win.submenu = wm
+        wm.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        wm.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = wm
+    }
 
     @objc func openSettings() {
         if settingsWindow?.isVisible != true { settingsWindow = makeSettingsWindow() }  // fresh load each open
@@ -613,7 +655,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(recent)
 
         m.addItem(.separator())
-        add(m, "Open Watched Folder", #selector(openFolder), symbol: "folder")
+        add(m, "Browse Files…", #selector(openBrowser), "b", symbol: "folder")
+        add(m, "Open Watched Folder in Finder", #selector(openFolder), symbol: "arrow.up.forward.app")
         m.addItem(.separator())
         let login = add(m, "Open at Login", #selector(toggleLogin), symbol: "power")
         login.state = loginEnabled ? .on : .off

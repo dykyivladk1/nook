@@ -16,6 +16,17 @@ A tiny macOS menu-bar app that keeps your Downloads folder tidy. New files are m
 Produces `build/Nook.app` (universal) and `build/Nook.dmg`. Needs Xcode command line tools.
 The app is ad-hoc signed; on first launch right-click it and choose **Open**.
 
+## Browse Files
+
+Menu bar icon → **Browse Files…** opens a Finder-style window inside Nook:
+
+- Sidebar with Favorites and your Nook folders; sortable Name / Date / Size / Kind columns; search
+- Back / forward / enclosing folder (⌘[ ⌘] ⌘↑), clickable path menu, double-click to open
+- Copy, cut, paste (⌘C ⌘X ⌘V, works with Finder), duplicate, compress, rename, new folder (⇧⌘N), Move to Trash (⌫)
+- Drag and drop between folders, the sidebar and Finder (hold ⌥ to copy); **Move To** in the context menu
+- Quick Look, Show in Finder, show hidden files, live refresh when Nook sorts something
+- Drag moves are logged, so **Undo Last Move** works for them too
+
 ## Settings
 
 Menu bar icon → **Settings…** (⌘,). A native Preferences window with General (folders, open at login) and Rules tabs. Extensions are comma separated; the name field is an optional regex. 
