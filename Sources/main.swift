@@ -6,7 +6,7 @@ import ServiceManagement
 // MARK: - Model
 
 struct Rule: Codable { var dest: String; var ext: [String]?; var name: String? }
-struct Config: Codable { var watch: String; var root: String?; var rules: [Rule] }
+struct Config: Codable { var watch: String; var root: String?; var rules: [Rule]; var delay: Int? }  // delay = minutes new files wait before being sorted
 struct Move: Codable { var t: Double; var src: String; var dst: String }
 
 let fm = FileManager.default
@@ -97,7 +97,8 @@ final class Engine {
     func tick(force: Bool) {
         reload()
         let dir = expand(config.watch)
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .addedToDirectoryDateKey, .creationDateKey]
+        let wait = Double(config.delay ?? 0) * 60
         guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return }
         var seen = Set<String>()
         for u in items {
@@ -106,6 +107,7 @@ final class Engine {
             guard let dest = match(u.lastPathComponent) else { continue }
             let size = v.fileSize ?? 0
             seen.insert(u.path)
+            if !force, wait > 0, let added = v.addedToDirectoryDate ?? v.creationDate, Date().timeIntervalSince(added) < wait { continue }
             if !force && pending[u.path] != size { pending[u.path] = size; continue }
             if move(u, to: dest) { pending[u.path] = nil; seen.remove(u.path) }
         }
@@ -181,6 +183,11 @@ let kinds: [Kind] = [
     Kind(id: "Code", symbol: "chevron.left.forwardslash.chevron.right", ext: ["py", "js", "ts", "json", "yaml", "yml", "ipynb", "sh", "html", "css"]),
 ]
 
+let waitChoices: [(minutes: Int, label: String)] = [
+    (0, "Immediately"), (1, "After 1 minute"), (5, "After 5 minutes"), (10, "After 10 minutes"),
+    (30, "After 30 minutes"), (60, "After 1 hour"), (360, "After 6 hours"), (1440, "After 1 day"), (10080, "After 1 week"),
+]
+
 var loginEnabled: Bool { SMAppService.mainApp.status == .enabled }
 
 func setLoginItem(_ on: Bool) {
@@ -202,6 +209,7 @@ struct RuleRow: Identifiable {
 final class SettingsModel: ObservableObject {
     @Published var watch = ""
     @Published var root = ""
+    @Published var delay = 0   // minutes
     @Published var rows: [RuleRow] = []
     @Published var launchAtLogin = loginEnabled
     private var loading = true
@@ -222,6 +230,7 @@ final class SettingsModel: ObservableObject {
         loading = true
         watch = c.watch
         root = c.root ?? c.watch
+        delay = c.delay ?? 0
         rows = c.rules.map { RuleRow(dest: $0.dest, ext: ($0.ext ?? []).joined(separator: ", "), name: Self.displayName($0.name ?? "")) }
         loading = false
     }
@@ -284,7 +293,7 @@ final class SettingsModel: ObservableObject {
             return Rule(dest: d, ext: e.isEmpty ? nil : e, name: n.isEmpty ? nil : n)
         }
         let r = root.trimmingCharacters(in: .whitespaces)
-        let c = Config(watch: watch.trimmingCharacters(in: .whitespaces), root: r.isEmpty ? nil : r, rules: rules)
+        let c = Config(watch: watch.trimmingCharacters(in: .whitespaces), root: r.isEmpty ? nil : r, rules: rules, delay: delay == 0 ? nil : delay)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         try? fm.createDirectory(at: support, withIntermediateDirectories: true)
@@ -306,6 +315,13 @@ struct GeneralPane: View {
                 Text("Nook only moves files that are placed directly in the watched folder. Subfolders are never touched.")
             }
             Section {
+                Picker("Sort new files", selection: $m.delay) {
+                    ForEach(waitChoices, id: \.minutes) { Text($0.label).tag($0.minutes) }
+                }
+            } footer: {
+                Text("Recent files stay where they are until they have been in the folder this long. “Sort Now” in the menu ignores the wait.")
+            }
+            Section {
                 Toggle("Open Nook when I log in", isOn: Binding(get: { m.launchAtLogin }, set: { m.setLaunchAtLogin($0) }))
             } footer: {
                 Text("Nook starts quietly in the menu bar when you start your Mac. Keep the app in your Applications folder.")
@@ -313,7 +329,7 @@ struct GeneralPane: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .frame(width: 520, height: 330)
+        .frame(width: 520, height: 430)
     }
 
     private func folderRow(_ label: String, _ path: Binding<String>) -> some View {

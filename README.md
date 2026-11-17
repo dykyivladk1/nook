@@ -27,6 +27,8 @@ Making rules is point-and-click:
 
 Nook offers to open at login on first launch; you can also toggle **Open at Login** in the menu or in Settings → General.
 
+**Sort new files** (General tab) lets recent files sit untouched for a while (1 minute up to 1 week) before they are moved. **Sort Now** in the menu ignores the wait.
+
 Changes are saved automatically. Invalid regexes turn red and are not saved.
 
 Rules are stored in `~/Library/Application Support/Nook/rules.json`, so you can also edit them by hand. The first matching rule wins.
