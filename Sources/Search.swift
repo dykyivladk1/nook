@@ -16,7 +16,8 @@ struct SmartQuery {
     var sort: String?                 // "newest" or "oldest" (e.g. "latest revision")
     var sizeLabels: [String] = []
 
-    private static let docs = ["com.adobe.pdf", "public.plain-text", "public.rtf", "com.microsoft.word.doc",
+    // A leading "=" matches the exact content type (so .txt/.md count as documents but .py source files do not).
+    private static let docs = ["com.adobe.pdf", "=public.plain-text", "=net.daringfireball.markdown", "public.rtf", "com.microsoft.word.doc",
                                "org.openxmlformats.wordprocessingml.document", "com.apple.iwork.pages.sffpages",
                                "org.oasis-open.opendocument.text"]
     private static let sheets = ["org.openxmlformats.spreadsheetml.sheet", "com.microsoft.excel.xls",
@@ -144,7 +145,10 @@ struct SmartQuery {
             ] }))
         }
         if !types.isEmpty {
-            parts.append(Self.any(types.map { NSPredicate(format: "%K == %@", "kMDItemContentTypeTree", $0) }))
+            parts.append(Self.any(types.map { t in
+                t.hasPrefix("=") ? NSPredicate(format: "%K == %@", "kMDItemContentType", String(t.dropFirst()))
+                                 : NSPredicate(format: "%K == %@", "kMDItemContentTypeTree", t)
+            }))
         }
         if let s = since { parts.append(NSPredicate(format: "%K >= %@", "kMDItemFSContentChangeDate", s as NSDate)) }
         if let u = until { parts.append(NSPredicate(format: "%K < %@", "kMDItemFSContentChangeDate", u as NSDate)) }

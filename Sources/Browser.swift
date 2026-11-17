@@ -28,7 +28,12 @@ final class BrowserModel: ObservableObject {
     @Published var items: [FileItem] = []
     @Published var selection = Set<URL>()
     @Published var search = ""
-    @Published var sortOrder = [KeyPathComparator(\FileItem.name, comparator: .localizedStandard)]
+    @Published var sortOrder = [KeyPathComparator(\FileItem.name, comparator: .localizedStandard)] {
+        didSet { if !settingSort { relevance = false } }
+    }
+    /// While true, search results are ordered by how well the file NAME matches (clicking a column header turns it off).
+    @Published var relevance = true
+    private var settingSort = false
     @Published var showHidden = false { didSet { reload() } }
     @Published var renaming: URL?
     @Published var message = ""
@@ -88,6 +93,16 @@ final class BrowserModel: ObservableObject {
         if scope == .folder, p.types.isEmpty, p.since == nil, p.minSize == nil, p.maxSize == nil, !p.groups.isEmpty {
             let seen = Set(list.map(\.url))
             list += items.filter { it in !seen.contains(it.url) && p.groups.allSatisfy { g in g.contains { it.name.localizedCaseInsensitiveContains($0) } } }
+        }
+        if relevance {
+            let g = parsed.groups
+            func score(_ it: FileItem) -> Int {
+                let hit = g.filter { grp in grp.contains { it.name.localizedCaseInsensitiveContains($0) } }.count
+                return hit * 10 + (hit == g.count && !g.isEmpty ? 100 : 0)
+            }
+            return list.map { ($0, score($0)) }
+                .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.date > $1.0.date }
+                .map(\.0)
         }
         return list.sorted(using: sortOrder)
     }
@@ -197,8 +212,11 @@ final class BrowserModel: ObservableObject {
         parsed = q
         interpretation = (ai ? "✦ " : "") + (q.summary.isEmpty ? "Type words, a file type, a date or a size" : q.summary)
             + (note.map { " (AI unavailable: \($0))" } ?? "")
-        if q.sort == "newest" { sortOrder = [KeyPathComparator(\FileItem.date, order: .reverse)] }
-        else if q.sort == "oldest" { sortOrder = [KeyPathComparator(\FileItem.date, order: .forward)] }
+        settingSort = true
+        if q.sort == "newest" { sortOrder = [KeyPathComparator(\FileItem.date, order: .reverse)]; relevance = false }
+        else if q.sort == "oldest" { sortOrder = [KeyPathComparator(\FileItem.date, order: .forward)]; relevance = false }
+        else { relevance = true }
+        settingSort = false
         guard let p = q.predicate else { results = []; finding = false; return }
         finding = true
         let scopeURL = scope == .folder ? url : fm.homeDirectoryForCurrentUser
@@ -212,6 +230,9 @@ final class BrowserModel: ObservableObject {
 
     private func item(for u: URL) -> FileItem? {
         if u.pathComponents.contains(where: { $0.hasPrefix(".") }) || u.path.contains("/Library/") { return nil }
+        // Skip dependency / build folders: they bury real documents under thousands of source files.
+        let noise: Set<String> = ["site-packages", "node_modules", "venv", "myenv", "env", "__pycache__", "Pods", "DerivedData", "vendor", "dist-packages", "build"]
+        if u.pathComponents.contains(where: { noise.contains($0) }) { return nil }
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .fileSizeKey, .contentModificationDateKey, .localizedTypeDescriptionKey]
         guard let v = try? u.resourceValues(forKeys: keys) else { return nil }
         return FileItem(url: u, name: u.lastPathComponent, isDir: (v.isDirectory ?? false) && !(v.isPackage ?? false),

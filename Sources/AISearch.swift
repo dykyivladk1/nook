@@ -71,6 +71,7 @@ enum AISearch {
         Example: "nyra cv" -> [["nyra"], ["cv", "resume", "lebenslauf"]]. Ignore filler words like find, me, please, file. \
         Set "sort" to "newest" if the user wants the latest / last / most recent version or revision, "oldest" for the earliest, otherwise null. \
         A file type word (pdf, image, ...) goes into "types", not into "keywords". \
+        Words like last, latest, newest, newer, recent, final, oldest are NEVER keywords: they only set "sort". \
         Use short lowercase words and no stop words. Use "types" only from the allowed list, only if the user named a kind of file. \
         Leave out anything the user did not ask for. Today is \(f.string(from: now)).
         """
@@ -114,6 +115,17 @@ extension SmartQuery {
                 .map { $0.lowercased().trimmingCharacters(in: .whitespaces) }.filter { $0.count >= 2 }
             if !group.isEmpty { q.groups.append(group) }
         }
+        // Safety net: "last/latest/..." must never act as a search word.
+        let newestWords: Set<String> = ["last", "latest", "newest", "newer", "recent", "final", "new"]
+        var sawNewest = false, sawOldest = false
+        q.groups = q.groups.compactMap { g in
+            let kept = g.filter { w in
+                if newestWords.contains(w) { sawNewest = true; return false }
+                if w == "oldest" || w == "earliest" { sawOldest = true; return false }
+                return true
+            }
+            return kept.isEmpty ? nil : kept
+        }
         q.words = q.groups.compactMap(\.first)
         for t in (json["types"] as? [String]) ?? [] {
             if let k = typeMap.first(where: { $0.label.lowercased() == t.lowercased() }), !q.typeLabels.contains(k.label) {
@@ -121,6 +133,7 @@ extension SmartQuery {
             }
         }
         if let s = (json["sort"] as? String)?.lowercased(), s == "newest" || s == "oldest" { q.sort = s }
+        else if sawNewest { q.sort = "newest" } else if sawOldest { q.sort = "oldest" }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
         if let s = (json["since"] as? String).flatMap(f.date(from:)) { q.since = s }
         if let u = (json["until"] as? String).flatMap(f.date(from:)) { q.until = Calendar.current.date(byAdding: .day, value: 1, to: u) }
