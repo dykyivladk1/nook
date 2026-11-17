@@ -124,23 +124,26 @@ struct SmartQuery {
         return parts.joined(separator: " · ")
     }
 
+    /// NSMetadataQuery throws (and kills the app) on AND/OR compounds with a single child, so unwrap those.
+    private static func all(_ p: [NSPredicate]) -> NSPredicate { p.count == 1 ? p[0] : NSCompoundPredicate(andPredicateWithSubpredicates: p) }
+    private static func any(_ p: [NSPredicate]) -> NSPredicate { p.count == 1 ? p[0] : NSCompoundPredicate(orPredicateWithSubpredicates: p) }
+
     var predicate: NSPredicate? {
         var parts: [NSPredicate] = []
         for g in groups {
-            parts.append(NSCompoundPredicate(orPredicateWithSubpredicates: g.flatMap { w in [
+            parts.append(Self.any(g.flatMap { w in [
                 NSPredicate(format: "%K CONTAINS[cd] %@", "kMDItemDisplayName", w),
                 NSPredicate(format: "%K CONTAINS[cd] %@", "kMDItemTextContent", w),
             ] }))
         }
         if !types.isEmpty {
-            parts.append(NSCompoundPredicate(orPredicateWithSubpredicates:
-                types.map { NSPredicate(format: "%K == %@", "kMDItemContentTypeTree", $0) }))
+            parts.append(Self.any(types.map { NSPredicate(format: "%K == %@", "kMDItemContentTypeTree", $0) }))
         }
         if let s = since { parts.append(NSPredicate(format: "%K >= %@", "kMDItemFSContentChangeDate", s as NSDate)) }
         if let u = until { parts.append(NSPredicate(format: "%K < %@", "kMDItemFSContentChangeDate", u as NSDate)) }
         if let n = minSize { parts.append(NSPredicate(format: "%K >= %@", "kMDItemFSSize", NSNumber(value: n))) }
         if let n = maxSize { parts.append(NSPredicate(format: "%K <= %@", "kMDItemFSSize", NSNumber(value: n))) }
-        return parts.isEmpty ? nil : NSCompoundPredicate(andPredicateWithSubpredicates: parts)
+        return parts.isEmpty ? nil : Self.all(parts)
     }
 }
 

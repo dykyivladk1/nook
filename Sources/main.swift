@@ -639,6 +639,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let main = NSMenu()
         let app = NSMenuItem(); main.addItem(app)
         let appMenu = NSMenu(); app.submenu = appMenu
+        let about = appMenu.addItem(withTitle: "About Nook", action: #selector(about), keyEquivalent: "")
+        about.target = self
+        appMenu.addItem(.separator())
+        let prefs = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        prefs.target = self
+        let browse = appMenu.addItem(withTitle: "Browse Files", action: #selector(openBrowser), keyEquivalent: "b")
+        browse.target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Nook", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit Nook", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
