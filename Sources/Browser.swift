@@ -21,6 +21,8 @@ struct Place: Identifiable, Hashable {
     var id: URL { url }
 }
 
+enum SearchScope: String, CaseIterable { case folder = "This Folder", everywhere = "Everywhere" }
+
 final class BrowserModel: ObservableObject {
     @Published var url: URL
     @Published var items: [FileItem] = []
@@ -32,6 +34,13 @@ final class BrowserModel: ObservableObject {
     @Published var message = ""
     @Published var places: [Place] = []
     @Published var nookPlaces: [Place] = []
+    @Published var scope: SearchScope = .folder
+    @Published var results: [FileItem] = []
+    @Published var interpretation = ""
+    @Published var finding = false
+    var parsed = SmartQuery()
+    private let spotlight = SpotlightSearch()
+    private var searchWork: DispatchWorkItem?
 
     let rootURL: URL
     private var back: [URL] = []
@@ -60,9 +69,17 @@ final class BrowserModel: ObservableObject {
 
     deinit { watcher?.cancel() }
 
+    var isSearching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
+
     var visible: [FileItem] {
-        let q = search.trimmingCharacters(in: .whitespaces)
-        let list = q.isEmpty ? items : items.filter { $0.name.localizedCaseInsensitiveContains(q) }
+        guard isSearching else { return items.sorted(using: sortOrder) }
+        var list = results
+        // Instant name matches in this folder, for files Spotlight has not indexed yet (plain name searches only).
+        let p = parsed
+        if scope == .folder, p.types.isEmpty, p.since == nil, p.minSize == nil, p.maxSize == nil, !p.groups.isEmpty {
+            let seen = Set(list.map(\.url))
+            list += items.filter { it in !seen.contains(it.url) && p.groups.allSatisfy { g in g.contains { it.name.localizedCaseInsensitiveContains($0) } } }
+        }
         return list.sorted(using: sortOrder)
     }
 
@@ -89,7 +106,8 @@ final class BrowserModel: ObservableObject {
             items = []
             message = "Nook can't read this folder."
         }
-        selection = selection.filter { s in items.contains { $0.url == s } }
+        selection = selection.filter { s in fm.fileExists(atPath: s.path) }
+        results = results.filter { fm.fileExists(atPath: $0.url.path) }
         let dirs = (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         nookPlaces = dirs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
@@ -127,8 +145,65 @@ final class BrowserModel: ObservableObject {
     // MARK: actions
 
     func open(_ urls: Set<URL>) {
-        if urls.count == 1, let u = urls.first, items.first(where: { $0.url == u })?.isDir == true { navigate(to: u); return }
+        if urls.count == 1, let u = urls.first, isFolder(u) { navigate(to: u); return }
         for u in urls { NSWorkspace.shared.open(u) }
+    }
+
+    private func isFolder(_ u: URL) -> Bool {
+        let v = try? u.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        return (v?.isDirectory ?? false) && !(v?.isPackage ?? false)
+    }
+
+    func showInFolder(_ u: URL) {
+        navigate(to: u.deletingLastPathComponent())
+        selection = [u]
+    }
+
+    // MARK: smart search
+
+    func scheduleSearch() {
+        searchWork?.cancel()
+        guard isSearching else { results = []; interpretation = ""; finding = false; parsed = SmartQuery(); spotlight.stop(); return }
+        parsed = SmartQuery.parse(search)
+        let w = DispatchWorkItem { [weak self] in self?.runSearch(useAI: false) }
+        searchWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: w)
+    }
+
+    /// Local parsing is instant. With useAI (Return key) and a configured key, OpenAI refines the query first.
+    func runSearch(useAI: Bool) {
+        guard isSearching else { return }
+        let text = search
+        let local = SmartQuery.parse(text)
+        apply(local, ai: false, note: nil)
+        guard useAI, AISearch.ready else { return }
+        interpretation = "✦ Asking AI…"
+        AISearch.interpret(text) { [weak self] q, err in
+            guard let self, self.search == text else { return }
+            if let q { self.apply(q, ai: true, note: nil) } else { self.apply(local, ai: false, note: err) }
+        }
+    }
+
+    private func apply(_ q: SmartQuery, ai: Bool, note: String?) {
+        parsed = q
+        interpretation = (ai ? "✦ " : "") + (q.summary.isEmpty ? "Type words, a file type, a date or a size" : q.summary)
+            + (note.map { " (AI unavailable: \($0))" } ?? "")
+        guard let p = q.predicate else { results = []; finding = false; return }
+        finding = true
+        let scopeURL = scope == .folder ? url : fm.homeDirectoryForCurrentUser
+        spotlight.start(p, scope: scopeURL.path) { [weak self] paths in
+            guard let self else { return }
+            self.results = paths.compactMap { self.item(for: URL(fileURLWithPath: $0)) }
+            self.finding = false
+        }
+    }
+
+    private func item(for u: URL) -> FileItem? {
+        if u.pathComponents.contains(where: { $0.hasPrefix(".") }) || u.path.contains("/Library/") { return nil }
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .fileSizeKey, .contentModificationDateKey, .localizedTypeDescriptionKey]
+        guard let v = try? u.resourceValues(forKeys: keys) else { return nil }
+        return FileItem(url: u, name: u.lastPathComponent, isDir: (v.isDirectory ?? false) && !(v.isPackage ?? false),
+                        size: Int64(v.fileSize ?? 0), date: v.contentModificationDate ?? .distantPast, kind: v.localizedTypeDescription ?? "")
     }
 
     func reveal(_ urls: Set<URL>) { NSWorkspace.shared.activateFileViewerSelecting(Array(urls)) }
@@ -239,6 +314,7 @@ struct BrowserView: View {
             sidebar.frame(minWidth: 160, idealWidth: 190, maxWidth: 240)
             VStack(spacing: 0) {
                 header
+                if m.isSearching { searchBar }
                 Divider()
                 table
                 Divider()
@@ -254,6 +330,8 @@ struct BrowserView: View {
             Button("Cancel", role: .cancel) { m.renaming = nil }
         }
         .onChange(of: m.renaming) { newName = $0?.lastPathComponent ?? "" }
+        .onChange(of: m.search) { _ in m.scheduleSearch() }
+        .onChange(of: m.scope) { _ in m.runSearch(useAI: false) }
     }
 
     // MARK: sidebar
@@ -304,21 +382,35 @@ struct BrowserView: View {
 
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search", text: $m.search).textFieldStyle(.plain)
+                TextField("Search by name or content", text: $m.search).textFieldStyle(.plain)
+                    .onSubmit { m.runSearch(useAI: true) }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-            .frame(width: 190)
+            .frame(width: 230)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles").foregroundStyle(AISearch.ready ? Color.accentColor : Color.secondary)
+            Text(m.interpretation).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer()
+            Picker("", selection: $m.scope) {
+                ForEach(SearchScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 190)
+        }
+        .padding(.horizontal, 12).padding(.bottom, 8)
+    }
+
     private var footer: some View {
         HStack {
-            Text(m.message.isEmpty
-                 ? "\(m.visible.count) items" + (m.selection.isEmpty ? "" : " · \(m.selection.count) selected")
-                 : m.message)
+            Text(!m.message.isEmpty ? m.message
+                 : m.isSearching ? (m.finding ? "Searching…" : "\(m.visible.count) results") + (m.selection.isEmpty ? "" : " · \(m.selection.count) selected")
+                 : "\(m.visible.count) items" + (m.selection.isEmpty ? "" : " · \(m.selection.count) selected"))
             Spacer()
             Text((m.url.path as NSString).abbreviatingWithTildeInPath).lineLimit(1).truncationMode(.head)
         }
@@ -333,7 +425,13 @@ struct BrowserView: View {
             TableColumn("Name", value: \.name, comparator: .localizedStandard) { item in
                 HStack(spacing: 6) {
                     Image(nsImage: icon(item.url)).resizable().frame(width: 18, height: 18)
-                    Text(item.name).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(item.name).lineLimit(1)
+                        if m.isSearching {
+                            Text((item.url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        }
+                    }
                 }
                 .dropDestination(for: URL.self) { urls, _ in
                     guard item.isDir else { return false }
@@ -371,6 +469,7 @@ struct BrowserView: View {
         } else {
             Button("Open") { m.open(sel) }
             Button("Quick Look") { m.quickLook(sel) }
+            if m.isSearching, sel.count == 1, let u = sel.first { Button("Show in Folder") { m.showInFolder(u) } }
             Button("Show in Finder") { m.reveal(sel) }
             Divider()
             Menu("Move To") {

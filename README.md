@@ -27,6 +27,15 @@ Menu bar icon → **Browse Files…** opens a Finder-style window inside Nook:
 - Quick Look, Show in Finder, show hidden files, live refresh when Nook sorts something
 - Drag moves are logged, so **Undo Last Move** works for them too
 
+## Smart search
+
+The search box in **Browse Files** understands plain language and searches names **and file contents** (PDFs, Word, text, ...) through Spotlight:
+
+- `pdf about taxes last week`, `images bigger than 5 mb`, `invoice yesterday`, `videos smaller than 200 mb this month`
+- Scope switch: This Folder / Everywhere; right-click a result → **Show in Folder**
+
+**Optional OpenAI mode** (Settings → Search): paste your API key (stored in your Keychain, never in the repo), turn it on, and press Return in the search box. Only the text you typed is sent to OpenAI, which expands it into synonyms/translations, dates and sizes (`Rechnung telekom last month` also finds "invoice"). File names and contents never leave your Mac. Without a key everything still works locally.
+
 ## Settings
 
 Menu bar icon → **Settings…** (⌘,). A native Preferences window with General (folders, open at login) and Rules tabs. Extensions are comma separated; the name field is an optional regex. 

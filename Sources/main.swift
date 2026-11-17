@@ -498,6 +498,38 @@ struct AddRuleSheet: View {
     }
 }
 
+struct SearchPane: View {
+    @AppStorage("aiSearch") private var enabled = false
+    @AppStorage("aiModel") private var model = "gpt-4o-mini"
+    @State private var key = Keychain.get("openai") ?? ""
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Use OpenAI to understand searches", isOn: $enabled)
+                SecureField("API key", text: $key, prompt: Text("sk-…"))
+                TextField("Model", text: $model)
+            } header: {
+                Text("AI Search")
+            } footer: {
+                Text("In Browse Files, type what you are looking for (for example “invoices from the telekom last month” or “Rechnung pdf bigger than 1 MB”) and press Return. Only the text you type is sent to OpenAI to work out synonyms, languages, dates and sizes. File names and contents never leave your Mac; Spotlight does the searching. Without a key, Nook still understands types, dates and sizes locally.")
+            }
+            Section {
+                HStack {
+                    Label(key.isEmpty ? "No key saved" : "Key saved in your Keychain", systemImage: key.isEmpty ? "key" : "key.fill")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove Key", role: .destructive) { key = "" }.disabled(key.isEmpty)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .frame(width: 520, height: 430)
+        .onChange(of: key) { Keychain.set("openai", $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+}
+
 func makeSettingsWindow() -> NSWindow {
     let model = SettingsModel()
     let tabs = NSTabViewController()
@@ -514,6 +546,7 @@ func makeSettingsWindow() -> NSWindow {
     }
     add("General", "gearshape", GeneralPane(m: model))
     add("Rules", "list.bullet.rectangle", RulesPane(m: model))
+    add("Search", "sparkles", SearchPane())
 
     let w = NSWindow(contentViewController: tabs)
     w.styleMask = [.titled, .closable, .miniaturizable]
