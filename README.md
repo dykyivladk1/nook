@@ -18,6 +18,8 @@ The app is ad-hoc signed; on first launch right-click it and choose **Open**.
 
 ## Browse Files
 
+Launching Nook (Alfred, Spotlight, Finder, Dock) opens this window first. When macOS starts Nook at login it stays quietly in the menu bar.
+
 Menu bar icon → **Browse Files…** opens a Finder-style window inside Nook:
 
 - Sidebar with Favorites and your Nook folders; sortable Name / Date / Size / Kind columns; search

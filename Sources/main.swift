@@ -585,6 +585,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.start()
         if CommandLine.arguments.contains("--settings") { openSettings() }
         if CommandLine.arguments.contains("--browser") { openBrowser() }
+
+        // Launched by hand (Alfred, Spotlight, Finder, Dock): show the explorer first.
+        // Started silently at login: stay in the menu bar.
+        let args = CommandLine.arguments
+        if !args.contains("--settings") && !args.contains("--browser") && !launchedAtLogin() { openBrowser() }
         if ProcessInfo.processInfo.environment["NOOK_SUPPORT"] == nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.askLoginOnce() }
         }
@@ -602,6 +607,18 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         a.addButton(withTitle: "Open at Login")
         a.addButton(withTitle: "Not Now")
         if a.runModal() == .alertFirstButtonReturn { setLoginItem(true) }
+    }
+
+    /// True when macOS started us as a login item (Apple event 'oapp' with prop data 'lgit').
+    func launchedAtLogin() -> Bool {
+        let ev = NSAppleEventManager.shared().currentAppleEvent
+        return ev?.paramDescriptor(forKeyword: AEKeyword(0x70726474))?.enumCodeValue == OSType(0x6C676974)
+    }
+
+    /// Nook is already running and gets launched again (Alfred, Finder, Dock): open the explorer.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openBrowser()
+        return true
     }
 
     @objc func toggleLogin() { setLoginItem(!loginEnabled) }
@@ -669,6 +686,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(head)
         if !status.isEmpty { let s = NSMenuItem(title: status, action: nil, keyEquivalent: ""); s.isEnabled = false; m.addItem(s) }
         m.addItem(.separator())
+        add(m, "Browse Files…", #selector(openBrowser), "b", symbol: "folder")
+        m.addItem(.separator())
         add(m, engine.paused ? "Resume" : "Pause", #selector(togglePause), symbol: engine.paused ? "play.fill" : "pause.fill")
         add(m, "Sort Now", #selector(sortNow), symbol: "arrow.triangle.2.circlepath")
         add(m, "Undo Last Move", #selector(undo), "z", symbol: "arrow.uturn.backward")
@@ -688,7 +707,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         m.addItem(recent)
 
         m.addItem(.separator())
-        add(m, "Browse Files…", #selector(openBrowser), "b", symbol: "folder")
         add(m, "Open Watched Folder in Finder", #selector(openFolder), symbol: "arrow.up.forward.app")
         m.addItem(.separator())
         let login = add(m, "Open at Login", #selector(toggleLogin), symbol: "power")
