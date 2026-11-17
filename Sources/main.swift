@@ -501,13 +501,23 @@ struct AddRuleSheet: View {
 struct SearchPane: View {
     @AppStorage("aiSearch") private var enabled = false
     @AppStorage("aiModel") private var model = "gpt-4o-mini"
-    @State private var key = Keychain.get("openai") ?? ""
+    @State private var key = ""
+    @State private var hasKey = AISearch.hasKey
 
     var body: some View {
         Form {
             Section {
                 Toggle("Use OpenAI to understand searches", isOn: $enabled)
-                SecureField("API key", text: $key, prompt: Text("sk-…"))
+                HStack {
+                    SecureField("API key", text: $key, prompt: Text(hasKey ? "Key saved. Paste a new one to replace it" : "sk-…"))
+                    Button("Save Key") {
+                        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !k.isEmpty else { return }
+                        Keychain.set("openai", k)
+                        AISearch.hasKey = true; hasKey = true; key = ""
+                    }
+                    .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
                 TextField("Model", text: $model)
             } header: {
                 Text("AI Search")
@@ -516,17 +526,19 @@ struct SearchPane: View {
             }
             Section {
                 HStack {
-                    Label(key.isEmpty ? "No key saved" : "Key saved in your Keychain", systemImage: key.isEmpty ? "key" : "key.fill")
+                    Label(hasKey ? "Key saved in your Keychain" : "No key saved", systemImage: hasKey ? "key.fill" : "key")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Remove Key", role: .destructive) { key = "" }.disabled(key.isEmpty)
+                    Button("Remove Key", role: .destructive) {
+                        Keychain.set("openai", ""); AISearch.hasKey = false; hasKey = false; key = ""
+                    }
+                    .disabled(!hasKey)
                 }
             }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .frame(width: 520, height: 430)
-        .onChange(of: key) { Keychain.set("openai", $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
     }
 }
 

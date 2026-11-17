@@ -38,11 +38,21 @@ enum AISearch {
         let m = UserDefaults.standard.string(forKey: "aiModel") ?? ""
         return m.isEmpty ? "gpt-4o-mini" : m
     }
-    static var key: String? {
-        let k = (Keychain.get("openai") ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return k.isEmpty ? nil : k
+    /// Remembered in UserDefaults so the UI never has to open the Keychain just to draw itself.
+    static var hasKey: Bool {
+        get { UserDefaults.standard.object(forKey: "aiHasKey") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "aiHasKey"); cachedKey = nil }
     }
-    static var ready: Bool { enabled && key != nil }
+    private static var cachedKey: String?
+
+    /// Reads the Keychain (once per run). Only called when an AI search actually happens.
+    static var key: String? {
+        if let c = cachedKey { return c }
+        let k = (Keychain.get("openai") ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedKey = k.isEmpty ? nil : k
+        return cachedKey
+    }
+    static var ready: Bool { enabled && hasKey }   // no Keychain access here
 
     private static let labels = SmartQuery.typeMap.map(\.label).joined(separator: "\" | \"")
 
