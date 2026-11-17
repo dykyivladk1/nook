@@ -13,6 +13,7 @@ struct SmartQuery {
     var minSize: Int64?
     var maxSize: Int64?
     var dateLabel: String?
+    var sort: String?                 // "newest" or "oldest" (e.g. "latest revision")
     var sizeLabels: [String] = []
 
     private static let docs = ["com.adobe.pdf", "public.plain-text", "public.rtf", "com.microsoft.word.doc",
@@ -40,6 +41,7 @@ struct SmartQuery {
         "a", "an", "the", "of", "in", "on", "at", "to", "for", "from", "with", "about", "my", "me", "and", "or",
         "file", "files", "named", "called", "name", "containing", "contains", "contain", "that", "which", "is",
         "are", "was", "were", "has", "have", "mentioning", "mention", "regarding", "related", "find", "show",
+        "please", "pls", "looking", "need", "want", "where", "give", "get", "revision", "version", "latest", "newest", "last",
         "search", "all", "any", "some", "those", "these", "it", "i", "by", "modified", "changed", "created", "than",
     ]
 
@@ -98,6 +100,10 @@ struct SmartQuery {
             q.since = cal.date(byAdding: .day, value: -7, to: now); q.dateLabel = "recent (7 days)"
         }
 
+        // "latest", "newest", "last revision/version" -> newest first
+        if take(#"\b(?:latest|newest|most recent|last\s+(?:revision|version)|final\s+version)\b"#, &t) != nil { q.sort = "newest" }
+        else if take(#"\b(?:oldest|earliest|first\s+(?:revision|version))\b"#, &t) != nil { q.sort = "oldest" }
+
         // words and types
         let sep = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-")).inverted
         for tok in t.components(separatedBy: sep) where !tok.isEmpty {
@@ -113,13 +119,14 @@ struct SmartQuery {
         return q
     }
 
-    var isEmpty: Bool { groups.isEmpty && words.isEmpty && types.isEmpty && since == nil && minSize == nil && maxSize == nil }
+    var isEmpty: Bool { groups.isEmpty && words.isEmpty && sort == nil && types.isEmpty && since == nil && minSize == nil && maxSize == nil }
 
     var summary: String {
         var parts: [String] = []
         if !typeLabels.isEmpty { parts.append(typeLabels.joined(separator: " + ")) }
         if let d = dateLabel { parts.append(d) }
         parts += sizeLabels
+        if let s = sort { parts.append(s + " first") }
         if !groups.isEmpty { parts.append("name or content has " + groups.map { "“" + $0.joined(separator: " | ") + "”" }.joined(separator: " + ")) }
         return parts.joined(separator: " · ")
     }

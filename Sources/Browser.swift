@@ -47,6 +47,7 @@ final class BrowserModel: ObservableObject {
     private var forward: [URL] = []
     private var cutURLs: Set<URL> = []
     private var watcher: DispatchSourceFileSystemObject?
+    private var flashToken: NSObjectProtocol?
 
     var canGoBack: Bool { !back.isEmpty }
     var canGoForward: Bool { !forward.isEmpty }
@@ -65,9 +66,17 @@ final class BrowserModel: ObservableObject {
         ]
         reload()
         watch()
+        flashToken = NotificationCenter.default.addObserver(forName: .nookFlash, object: nil, queue: .main) { [weak self] n in
+            guard let self, let t = n.object as? String else { return }
+            self.message = t
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if self.message == t { self.message = "" } }
+        }
     }
 
-    deinit { watcher?.cancel() }
+    deinit {
+        watcher?.cancel()
+        if let t = flashToken { NotificationCenter.default.removeObserver(t) }
+    }
 
     var isSearching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -188,6 +197,8 @@ final class BrowserModel: ObservableObject {
         parsed = q
         interpretation = (ai ? "✦ " : "") + (q.summary.isEmpty ? "Type words, a file type, a date or a size" : q.summary)
             + (note.map { " (AI unavailable: \($0))" } ?? "")
+        if q.sort == "newest" { sortOrder = [KeyPathComparator(\FileItem.date, order: .reverse)] }
+        else if q.sort == "oldest" { sortOrder = [KeyPathComparator(\FileItem.date, order: .forward)] }
         guard let p = q.predicate else { results = []; finding = false; return }
         finding = true
         let scopeURL = scope == .folder ? url : fm.homeDirectoryForCurrentUser
@@ -195,6 +206,7 @@ final class BrowserModel: ObservableObject {
             guard let self else { return }
             self.results = paths.compactMap { self.item(for: URL(fileURLWithPath: $0)) }
             self.finding = false
+            if q.sort != nil, self.selection.isEmpty, let first = self.visible.first { self.selection = [first.url] }
         }
     }
 
@@ -374,6 +386,15 @@ struct BrowserView: View {
 
             Spacer()
 
+            Menu {
+                let app = NSApp.delegate as? App
+                Button((app?.engine.paused ?? false) ? "Resume Sorting" : "Pause Sorting") { app?.togglePause() }
+                Button("Sort Now") { app?.sortNow() }
+                Button("Undo Last Move") { app?.undo() }
+                Divider()
+                Button("Settings…") { app?.openSettings() }
+            } label: { Image(systemName: "wand.and.stars") }
+                .menuStyle(.borderlessButton).fixedSize().help("Sorting")
             Button { m.newFolder() } label: { Image(systemName: "folder.badge.plus") }
                 .keyboardShortcut("n", modifiers: [.command, .shift]).help("New Folder (⇧⌘N)")
             Button { m.showHidden.toggle() } label: { Image(systemName: m.showHidden ? "eye.fill" : "eye") }

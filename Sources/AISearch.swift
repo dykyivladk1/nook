@@ -63,9 +63,14 @@ enum AISearch {
         {"keywords": [["word", "synonym", "translation"], ["other", "synonym"]],
          "types": ["\(labels)"],
          "since": "YYYY-MM-DD" or null, "until": "YYYY-MM-DD" or null,
-         "min_mb": number or null, "max_mb": number or null}
+         "min_mb": number or null, "max_mb": number or null,
+         "sort": "newest" or "oldest" or null}
         Rules: "keywords" is a list of groups. Every group must match (AND). Words inside a group are alternatives (OR): \
         synonyms, translations (e.g. invoice, rechnung, faktura), singular/plural and spelling variants. \
+        Every distinct thing the user names (a person, a company, a kind of document) is its OWN group, never merge different things into one group. \
+        Example: "nyra cv" -> [["nyra"], ["cv", "resume", "lebenslauf"]]. Ignore filler words like find, me, please, file. \
+        Set "sort" to "newest" if the user wants the latest / last / most recent version or revision, "oldest" for the earliest, otherwise null. \
+        A file type word (pdf, image, ...) goes into "types", not into "keywords". \
         Use short lowercase words and no stop words. Use "types" only from the allowed list, only if the user named a kind of file. \
         Leave out anything the user did not ask for. Today is \(f.string(from: now)).
         """
@@ -115,6 +120,7 @@ extension SmartQuery {
                 q.typeLabels.append(k.label); q.types += k.utis
             }
         }
+        if let s = (json["sort"] as? String)?.lowercased(), s == "newest" || s == "oldest" { q.sort = s }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
         if let s = (json["since"] as? String).flatMap(f.date(from:)) { q.since = s }
         if let u = (json["until"] as? String).flatMap(f.date(from:)) { q.until = Calendar.current.date(byAdding: .day, value: 1, to: u) }

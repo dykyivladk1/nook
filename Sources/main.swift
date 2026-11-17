@@ -583,28 +583,41 @@ func makeSettingsWindow() -> NSWindow {
 
 // MARK: - UI
 
+/// Brief feedback ("Sorted", "Restored x") shown in the explorer footer.
+func flash(_ text: String) { NotificationCenter.default.post(name: .nookFlash, object: text) }
+extension Notification.Name { static let nookFlash = Notification.Name("nookFlash") }
+
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let engine = Engine()
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    let menu = NSMenu()
-    var status = ""
+    var settingsWindow: NSWindow?
+    var browserWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         installMainMenu()
-        menu.delegate = self
-        item.menu = menu
-        updateIcon()
         engine.start()
-        if CommandLine.arguments.contains("--settings") { openSettings() }
-        if CommandLine.arguments.contains("--browser") { openBrowser() }
-
-        // Launched by hand (Alfred, Spotlight, Finder, Dock): show the explorer first.
-        // Started silently at login: stay in the menu bar.
         let args = CommandLine.arguments
+        if args.contains("--settings") { openSettings() }
+        if args.contains("--browser") { openBrowser() }
+        // Launched by hand (Alfred, Spotlight, Finder, Dock): show the explorer. Started silently at login: stay in the Dock.
         if !args.contains("--settings") && !args.contains("--browser") && !launchedAtLogin() { openBrowser() }
         if ProcessInfo.processInfo.environment["NOOK_SUPPORT"] == nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.askLoginOnce() }
         }
+    }
+
+    /// Closing the last window keeps Nook running so sorting continues; click the Dock icon to reopen.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Dock icon clicked, or Nook launched again (Alfred, Finder): open the explorer.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openBrowser() }
+        return true
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let m = NSMenu()
+        buildSortingMenu(m)
+        return m
     }
 
     /// First launch only: offer to start Nook at login.
@@ -615,7 +628,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
         a.messageText = "Open Nook when you start your Mac?"
-        a.informativeText = "Nook lives in the menu bar and keeps your Downloads tidy in the background. You can change this any time in Settings."
+        a.informativeText = "Nook keeps your Downloads tidy in the background. You can change this any time in the Sorting menu or in Settings."
         a.addButton(withTitle: "Open at Login")
         a.addButton(withTitle: "Not Now")
         if a.runModal() == .alertFirstButtonReturn { setLoginItem(true) }
@@ -627,16 +640,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return ev?.paramDescriptor(forKeyword: AEKeyword(0x70726474))?.enumCodeValue == OSType(0x6C676974)
     }
 
-    /// Nook is already running and gets launched again (Alfred, Finder, Dock): open the explorer.
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        openBrowser()
-        return true
-    }
-
-    @objc func toggleLogin() { setLoginItem(!loginEnabled) }
-
-    var settingsWindow: NSWindow?
-    var browserWindow: NSWindow?
+    // MARK: windows
 
     @objc func openBrowser() {
         if browserWindow?.isVisible != true {
@@ -644,41 +648,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         browserWindow?.makeKeyAndOrderFront(nil)
-    }
-
-    /// Standard Edit/Window menus so ⌘C ⌘V ⌘X ⌘A ⌘Z ⌘W work in text fields and the file browser.
-    func installMainMenu() {
-        let main = NSMenu()
-        let app = NSMenuItem(); main.addItem(app)
-        let appMenu = NSMenu(); app.submenu = appMenu
-        let about = appMenu.addItem(withTitle: "About Nook", action: #selector(about), keyEquivalent: "")
-        about.target = self
-        appMenu.addItem(.separator())
-        let prefs = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        prefs.target = self
-        let browse = appMenu.addItem(withTitle: "Browse Files", action: #selector(openBrowser), keyEquivalent: "b")
-        browse.target = self
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Nook", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "Quit Nook", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-
-        let edit = NSMenuItem(); main.addItem(edit)
-        let em = NSMenu(title: "Edit"); edit.submenu = em
-        em.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = em.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
-        redo.keyEquivalentModifierMask = [.command, .shift]
-        em.addItem(.separator())
-        em.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        em.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        em.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        em.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-
-        let win = NSMenuItem(); main.addItem(win)
-        let wm = NSMenu(title: "Window"); win.submenu = wm
-        wm.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        wm.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        NSApp.mainMenu = main
-        NSApp.windowsMenu = wm
     }
 
     @objc func openSettings() {
@@ -692,25 +661,68 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.orderFrontStandardAboutPanel(nil)
     }
 
-    func updateIcon() {
-        let name = engine.paused ? "pause.circle" : "tray.and.arrow.down"
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Nook")
-        img?.isTemplate = true
-        item.button?.image = img
+    // MARK: menu bar
+
+    func installMainMenu() {
+        let main = NSMenu()
+
+        let app = NSMenuItem(); main.addItem(app)
+        let am = NSMenu(); app.submenu = am
+        add(am, "About Nook", #selector(about))
+        am.addItem(.separator())
+        add(am, "Settings…", #selector(openSettings), ",")
+        am.addItem(.separator())
+        am.addItem(withTitle: "Hide Nook", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = am.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        am.addItem(.separator())
+        am.addItem(withTitle: "Quit Nook", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        let file = NSMenuItem(); main.addItem(file)
+        let fm_ = NSMenu(title: "File"); file.submenu = fm_
+        add(fm_, "New Window", #selector(openBrowser), "n")
+        add(fm_, "Open Watched Folder in Finder", #selector(openFolder))
+        fm_.addItem(.separator())
+        fm_.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+
+        let edit = NSMenuItem(); main.addItem(edit)
+        let em = NSMenu(title: "Edit"); edit.submenu = em
+        em.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = em.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        em.addItem(.separator())
+        em.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        em.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        em.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        em.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        let sorting = NSMenuItem(); main.addItem(sorting)
+        let sm = NSMenu(title: "Sorting"); sorting.submenu = sm
+        sm.delegate = self          // rebuilt every time it opens
+
+        let win = NSMenuItem(); main.addItem(win)
+        let wm = NSMenu(title: "Window"); win.submenu = wm
+        wm.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        wm.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = wm
     }
 
     func menuNeedsUpdate(_ m: NSMenu) {
         m.removeAllItems()
-        let head = NSMenuItem(title: engine.paused ? "Paused" : "Watching \(engine.watchPath)", action: nil, keyEquivalent: "")
+        buildSortingMenu(m)
+    }
+
+    func buildSortingMenu(_ m: NSMenu) {
+        let head = NSMenuItem(title: engine.paused ? "Sorting is paused" : "Watching \(engine.watchPath)", action: nil, keyEquivalent: "")
         head.isEnabled = false
         m.addItem(head)
-        if !status.isEmpty { let s = NSMenuItem(title: status, action: nil, keyEquivalent: ""); s.isEnabled = false; m.addItem(s) }
         m.addItem(.separator())
-        add(m, "Browse Files…", #selector(openBrowser), "b", symbol: "folder")
-        m.addItem(.separator())
-        add(m, engine.paused ? "Resume" : "Pause", #selector(togglePause), symbol: engine.paused ? "play.fill" : "pause.fill")
-        add(m, "Sort Now", #selector(sortNow), symbol: "arrow.triangle.2.circlepath")
-        add(m, "Undo Last Move", #selector(undo), "z", symbol: "arrow.uturn.backward")
+        add(m, engine.paused ? "Resume Sorting" : "Pause Sorting", #selector(togglePause))
+        let now = add(m, "Sort Now", #selector(sortNow), "r")
+        now.keyEquivalentModifierMask = [.command, .shift]
+        let undoItem = add(m, "Undo Last Move", #selector(undo), "z")
+        undoItem.keyEquivalentModifierMask = [.command, .option]
 
         let sub = NSMenu()
         let moves = engine.recent(8)
@@ -722,39 +734,32 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sub.addItem(it)
         }
         let recent = NSMenuItem(title: "Recent Moves", action: nil, keyEquivalent: "")
-        recent.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
         recent.submenu = sub
         m.addItem(recent)
 
         m.addItem(.separator())
-        add(m, "Open Watched Folder in Finder", #selector(openFolder), symbol: "arrow.up.forward.app")
-        m.addItem(.separator())
-        let login = add(m, "Open at Login", #selector(toggleLogin), symbol: "power")
+        let login = add(m, "Open at Login", #selector(toggleLogin))
         login.state = loginEnabled ? .on : .off
-        add(m, "Settings…", #selector(openSettings), ",", symbol: "gearshape")
-        add(m, "About Nook", #selector(about), symbol: "info.circle")
-        m.addItem(.separator())
-        add(m, "Quit Nook", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
     }
 
     @discardableResult
-    func add(_ m: NSMenu, _ title: String, _ sel: Selector, _ key: String = "", symbol: String? = nil, target: AnyObject? = nil) -> NSMenuItem {
+    func add(_ m: NSMenu, _ title: String, _ sel: Selector, _ key: String = "") -> NSMenuItem {
         let it = NSMenuItem(title: title, action: sel, keyEquivalent: key)
-        it.target = target ?? self
-        if let symbol { it.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        it.target = self
         m.addItem(it)
         return it
     }
 
-    @objc func togglePause() { engine.paused.toggle(); status = ""; updateIcon() }
-    @objc func sortNow() { status = "Sorted"; engine.sortNow() }
-    @objc func undo() { engine.undoLast { self.status = $0 } }
+    @objc func togglePause() { engine.paused.toggle(); flash(engine.paused ? "Sorting paused" : "Sorting resumed") }
+    @objc func sortNow() { engine.sortNow(); flash("Sorted") }
+    @objc func undo() { engine.undoLast { flash($0) } }
+    @objc func toggleLogin() { setLoginItem(!loginEnabled) }
     @objc func reveal(_ s: NSMenuItem) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: s.representedObject as! String)]) }
     @objc func openFolder() { NSWorkspace.shared.open(expand(engine.watchPath)) }
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.regular)
 let delegate = App()
 app.delegate = delegate
 app.run()

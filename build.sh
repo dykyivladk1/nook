@@ -23,7 +23,6 @@ cat > build/Nook.app/Contents/Info.plist <<PLIST
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>LSUIElement</key><true/>
   <key>NSHumanReadableCopyright</key><string>Nook</string>
 </dict></plist>
 PLIST
